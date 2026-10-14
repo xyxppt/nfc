@@ -18,25 +18,37 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Grant Execute Permission for Gradlew
-        run: |
-          if [ -d "android" ]; then
-            cd android
-          fi
-          if [ -f "gradlew" ]; then
-            chmod +x gradlew
-          fi
+      - name: Setup Gradle 8.8
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.8'
 
       - name: Build Debug APK with Gradle
         run: |
-          if [ -d "android" ]; then
-            cd android
+          # 若有 zip 檔則自動解壓縮
+          if ls *.zip 1> /dev/null 2>&1; then
+            echo "解壓縮專案包..."
+            unzip -o *.zip
           fi
-          if [ -f "./gradlew" ]; then
-            ./gradlew assembleDebug --stacktrace
+
+          # 自動定位包含 settings.gradle.kts 的專案目錄
+          PROJECT_DIR="."
+          if [ -f "android/settings.gradle.kts" ]; then
+            PROJECT_DIR="android"
+          elif [ -f "settings.gradle.kts" ]; then
+            PROJECT_DIR="."
           else
-            gradle assembleDebug --stacktrace
+            FOUND=$(find . -name "settings.gradle.kts" -not -path "*/.*" | head -n 1)
+            if [ -n "$FOUND" ]; then
+              PROJECT_DIR=$(dirname "$FOUND")
+            fi
           fi
+
+          echo "專案目錄為: $PROJECT_DIR"
+          cd "$PROJECT_DIR"
+
+          # 執行 Android APK 編譯
+          gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
@@ -44,5 +56,5 @@ jobs:
           name: nfc-tag-emulator-apk
           path: |
             **/build/outputs/apk/debug/*.apk
-            android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
           retention-days: 7
