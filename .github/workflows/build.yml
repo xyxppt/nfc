@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 下載 GitHub 儲存庫內容
+      # 1. 下載 GitHub 儲存庫
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -26,23 +26,51 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # 3. 安裝 Android SDK
+      # 3. 設定 Android SDK 工具
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
           accept-android-sdk-licenses: true
 
-      # 4. 設定 Gradle
+      # 4. 逐個安裝 Android SDK 套件
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -f "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+              -type f -name sdkmanager -print -quit || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -f "$SDKMANAGER" ]; then
+            echo "::error::Cannot find Android sdkmanager."
+            find "$ANDROID_HOME" -maxdepth 5 -type f \
+              -name sdkmanager || true
+            exit 1
+          fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" --install "platform-tools"
+          "$SDKMANAGER" --install "platforms;android-34"
+          "$SDKMANAGER" --install "build-tools;34.0.0"
+
+          echo "Android SDK packages installed successfully."
+
+      # 5. 設定 Gradle 備援版本
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
 
-      # 5. 解壓 ZIP 並尋找 Android 專案
+      # 6. 解壓 ZIP 並尋找 Android 專案
       - name: Locate and extract project
         shell: bash
         run: |
@@ -70,13 +98,13 @@ jobs:
               -maxdepth 2 \
               -type f \
               -name '*.zip' \
-              -not -path './extracted/*' \
               -not -path './.git/*' \
+              -not -path './extracted/*' \
               -print0
           )
 
           echo "=================================="
-          echo "Search Gradle settings"
+          echo "Find Gradle settings"
           echo "=================================="
 
           SETTINGS="$(
@@ -93,21 +121,17 @@ jobs:
           )"
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::Android project settings file not found."
-            echo "Expected settings.gradle or settings.gradle.kts."
-            echo "Files found after extraction:"
+            echo "::error::Gradle settings file not found."
+            echo "Android project files after extraction:"
 
             find extracted \
               -maxdepth 8 \
               -type f \
               | head -n 250 || true
 
-            echo "ZIP file contents:"
-            find . \
-              -maxdepth 2 \
-              -type f \
-              -name '*.zip' \
-              -print
+            echo "ZIP files:"
+            find . -maxdepth 3 -type f \
+              -name '*.zip' -print
 
             exit 1
           fi
@@ -115,18 +139,15 @@ jobs:
           PROJECT_DIR="$(dirname "$SETTINGS")"
           PROJECT_DIR="$(realpath "$PROJECT_DIR")"
 
-          echo "Settings file: $SETTINGS"
+          echo "Found settings file: $SETTINGS"
           echo "Project directory: $PROJECT_DIR"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "=================================="
-          echo "Project root files"
-          echo "=================================="
-
+          echo "Project root contents:"
           ls -la "$PROJECT_DIR"
 
-      # 6. 檢查專案結構
+      # 7. 檢查 Android 專案是否完整
       - name: Validate Android project
         shell: bash
         run: |
@@ -134,7 +155,7 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "Checking Android project structure..."
+          echo "Checking project structure..."
 
           if [ ! -f "settings.gradle" ] && \
              [ ! -f "settings.gradle.kts" ]; then
@@ -144,15 +165,13 @@ jobs:
 
           if [ ! -f "build.gradle" ] && \
              [ ! -f "build.gradle.kts" ]; then
-            echo "::error::Root build.gradle file is missing."
-            echo "The project may have an incomplete structure."
+            echo "::error::Root Gradle build file is missing."
             ls -la
             exit 1
           fi
 
           if [ ! -d "app" ]; then
-            echo "::error::The app directory was not found."
-            echo "Project files:"
+            echo "::error::App directory is missing."
             find . -maxdepth 4 -type f | head -n 200
             exit 1
           fi
@@ -163,11 +182,11 @@ jobs:
             exit 1
           fi
 
-          echo "Project structure looks valid."
-
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      # 7. 建置 Debug APK
+          echo "Android project structure looks valid."
+
+      # 8. 編譯 Debug APK
       - name: Build Debug APK
         shell: bash
         run: |
@@ -188,7 +207,7 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
 
           echo "=================================="
-          echo "Gradle build"
+          echo "Build APK"
           echo "=================================="
 
           if [ -f "./gradlew" ]; then
@@ -198,17 +217,15 @@ jobs:
             echo "Gradle Wrapper not found."
 
             if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-              echo "Wrapper configuration exists but gradlew is missing."
-              echo "::error::Restore the Gradle Wrapper files."
+              echo "::error::Gradle Wrapper configuration exists, but gradlew is missing."
               exit 1
             fi
 
-            echo "Using installed Gradle 8.10.2."
             gradle --no-daemon assembleDebug
           fi
 
           echo "=================================="
-          echo "Search generated APK"
+          echo "Find generated APK"
           echo "=================================="
 
           find . \
@@ -216,7 +233,7 @@ jobs:
             -path '*/build/outputs/apk/debug/*.apk' \
             -print
 
-      # 8. 上傳 APK
+      # 9. 上傳 APK 成品
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
