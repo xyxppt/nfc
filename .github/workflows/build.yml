@@ -1,13 +1,19 @@
+
 name: Build Android APK
+
 on:
   push:
     branches: ["**"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Debug APK
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -15,53 +21,84 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-levels: '34'
-          build-tools: '34.0.0'
-          cmdline-tools: 'latest'
-          components: 'platform-tools'
+          packages: |
+            platform-tools
+            platforms;android-34
+            platforms;android-35
+            build-tools;34.0.0
+            build-tools;35.0.0
 
-      - name: Setup Gradle 8.10.2
+      - name: Setup Gradle fallback
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.10.2'
+          gradle-version: "8.10.2"
 
-      - name: Build Debug APK with Gradle
+      - name: Locate and extract project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          if ls *.zip 1>/dev/null 2>&1; then
-            echo "發現 zip 壓縮包，正在解壓縮..."
-            unzip -o *.zip
+          shopt -s nullglob
+          zips=( *.zip )
+
+          for zipfile in "${zips[@]}"; do
+            echo "Extracting: $zipfile"
+            unzip -o "$zipfile" -d extracted
+          done
+
+          SETTINGS=$(find . \
+            -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path './.git/*' \
+            -not -path './.gradle/*' \
+            | head -n 1 || true)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle or settings.gradle.kts not found."
+            echo "Check whether the Android project files were uploaded."
+            find . -maxdepth 4 -type f | head -n 100
+            exit 1
           fi
 
-          PROJECT_DIR="."
-          if [ -f "android/settings.gradle.kts" ]; then
-            PROJECT_DIR="android"
-          elif [ -f "settings.gradle.kts" ]; then
-            PROJECT_DIR="."
-          else
-            FOUND=$(find . -name "settings.gradle.kts" -not -path "*/.*" | head -n 1)
-            if [ -n "$FOUND" ]; then
-              PROJECT_DIR=$(dirname "$FOUND")
-            fi
-          fi
+          PROJECT_DIR=$(dirname "$SETTINGS")
+          PROJECT_DIR=$(realpath "$PROJECT_DIR")
 
-          echo "進入 Android 專案路徑: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
 
-          echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
-          yes | sdkmanager --licenses || true
+          echo "Java version:"
+          java -version
 
-          gradle assembleDebug --no-daemon
+          echo "Android SDK: $ANDROID_HOME"
+          echo "Project files:"
+          ls -la
 
-      - name: Upload Debug APK Artifact
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon assembleDebug
+          else
+            echo "Gradle Wrapper missing; using installed Gradle."
+            gradle --no-daemon assembleDebug
+          fi
+
+          echo "Searching for APK..."
+          find . -type f -path "*/build/outputs/apk/debug/*.apk"
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: nfc-tag-emulator-apk
