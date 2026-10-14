@@ -1,0 +1,48 @@
+name: Build Android APK
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Grant Execute Permission for Gradlew
+        run: |
+          if [ -d "android" ]; then
+            cd android
+          fi
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+          fi
+
+      - name: Build Debug APK with Gradle
+        run: |
+          if [ -d "android" ]; then
+            cd android
+          fi
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfc-tag-emulator-apk
+          path: |
+            **/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
