@@ -19,7 +19,7 @@ jobs:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
-      # 1. 取得 GitHub 儲存庫
+      # 1. 取得儲存庫
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -30,13 +30,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # 3. 檢查執行環境內的 Android SDK
+      # 3. 尋找 Android SDK
       - name: Locate Android SDK
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "ANDROID_HOME=$ANDROID_HOME"
 
           if [ ! -d "$ANDROID_HOME" ]; then
             echo "::error::Android SDK directory not found."
@@ -51,65 +49,45 @@ jobs:
           )"
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager not found in preinstalled SDK."
-            find "$ANDROID_HOME" -maxdepth 5 -type f \
-              -name sdkmanager || true
+            echo "::error::sdkmanager not found."
+            find "$ANDROID_HOME" -maxdepth 5 \
+              -name sdkmanager -print || true
             exit 1
           fi
 
-          SDKMANAGER_DIR="$(dirname "$SDKMANAGER")"
-
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "$SDKMANAGER_DIR" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "Android SDK: $ANDROID_HOME"
+          echo "SDK Manager: $SDKMANAGER"
 
-          echo "sdkmanager: $SDKMANAGER"
-          java -version
-          "$SDKMANAGER" --version
-
-      # 4. 接受授權並逐個安裝 SDK 套件
+      # 4. 安裝 Android SDK 套件
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Accepting Android SDK licenses..."
+          yes | "$SDKMANAGER" --licenses \
+            >/dev/null 2>&1 || true
 
-          yes | "$SDKMANAGER" --licenses || true
-
-          echo "Updating SDK package metadata..."
-          "$SDKMANAGER" --list
-
-          echo "Installing platform-tools..."
           "$SDKMANAGER" --install "platform-tools"
-
-          echo "Installing Android API 34..."
           "$SDKMANAGER" --install "platforms;android-34"
-
-          echo "Installing Build Tools 34..."
-          "$SDKMANAGER" --install "build-tools;34.0.0"
-
-          echo "Installing Android API 35..."
           "$SDKMANAGER" --install "platforms;android-35"
-
-          echo "Installing Build Tools 35..."
+          "$SDKMANAGER" --install "build-tools;34.0.0"
           "$SDKMANAGER" --install "build-tools;35.0.0"
 
-          echo "Verifying installed packages..."
           test -d "$ANDROID_HOME/platform-tools"
           test -d "$ANDROID_HOME/platforms/android-34"
-          test -d "$ANDROID_HOME/build-tools/34.0.0"
+          test -d "$ANDROID_HOME/platforms/android-35"
 
-          echo "Android SDK installation completed."
+          echo "Android SDK packages installed."
 
-      # 5. 設定 Gradle 備援版本
+      # 5. 設定 Gradle
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.10.2"
+          gradle-version: "8.13"
 
-      # 6. 檢查並解壓 Android 專案 ZIP
-      - name: Inspect and Extract Project ZIP
+      # 6. 解壓並檢查 ZIP
+      - name: Extract Android Project
         shell: bash
         run: |
           set -euo pipefail
@@ -117,32 +95,28 @@ jobs:
           ZIP_FILE="android-nfc-tag-emulator.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Project ZIP not found: $ZIP_FILE"
-            find . -maxdepth 5 -type f \
+            echo "::error::Project ZIP not found."
+            find . -maxdepth 4 -type f \
               -not -path './.git/*' || true
             exit 1
           fi
 
-          echo "Checking ZIP integrity..."
           unzip -t "$ZIP_FILE"
 
-          echo "ZIP contents:"
-          unzip -Z1 "$ZIP_FILE" | head -n 300
-
           mkdir -p extracted
-
-          echo "Extracting Android project..."
           unzip -o "$ZIP_FILE" -d extracted
 
           echo "Extracted files:"
           find extracted -maxdepth 8 -type f \
             | head -n 300
 
-      # 7. 尋找 Android 專案根目錄
+      # 7. 尋找真正的 Android 專案根目錄
       - name: Locate Android Project
         shell: bash
         run: |
           set -euo pipefail
+
+          PROJECT_DIR=""
 
           SETTINGS="$(
             find extracted \
@@ -155,27 +129,113 @@ jobs:
               -print -quit
           )"
 
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::No Gradle settings file found in ZIP."
-            echo "The ZIP may not contain a complete Android project."
-            echo "Extracted file list:"
-            find extracted -maxdepth 8 -type f \
-              | head -n 300 || true
+          if [ -n "$SETTINGS" ]; then
+            PROJECT_DIR="$(dirname "$SETTINGS")"
+          else
+            APP_BUILD="$(
+              find extracted \
+                -type f \
+                \( \
+                  -path '*/app/build.gradle' \
+                  -o \
+                  -path '*/app/build.gradle.kts' \
+                \) \
+                -print -quit
+            )"
+
+            if [ -z "$APP_BUILD" ]; then
+              echo "::error::No app/build.gradle or app/build.gradle.kts found."
+              find extracted -maxdepth 10 -type f \
+                | head -n 300
+              exit 1
+            fi
+
+            APP_DIR="$(dirname "$APP_BUILD")"
+            PROJECT_DIR="$(dirname "$APP_DIR")"
+          fi
+
+          PROJECT_DIR="$(realpath "$PROJECT_DIR")"
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "::error::App module build file not found."
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS")"
-          PROJECT_DIR="$(realpath "$PROJECT_DIR")"
-
-          echo "Found settings file: $SETTINGS"
-          echo "Project directory: $PROJECT_DIR"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Project root:"
+          echo "Project root: $PROJECT_DIR"
           ls -la "$PROJECT_DIR"
 
-      # 8. 驗證 Android 專案結構
+      # 8. 補上缺少的根目錄 Gradle 設定
+      - name: Repair Missing Gradle Root Files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          # 若 ZIP 沒有 settings.gradle.kts，
+          # 建立標準 Android 單模組專案設定。
+          if [ ! -f "settings.gradle" ] && \
+             [ ! -f "settings.gradle.kts" ]; then
+
+            echo "Creating settings.gradle.kts"
+
+            cat > settings.gradle.kts <<'GRADLE'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "NfcTagEmulator"
+          include(":app")
+          GRADLE
+          fi
+
+          # 若缺少根目錄 build.gradle.kts，
+          # 建立最小根目錄設定。
+          if [ ! -f "build.gradle" ] && \
+             [ ! -f "build.gradle.kts" ]; then
+
+            echo "Creating root build.gradle.kts"
+
+            cat > build.gradle.kts <<'GRADLE'
+          // Android plugin versions are defined by the app
+          // module or the version catalog when applicable.
+          GRADLE
+          fi
+
+          # 確保 app 模組存在
+          if [ ! -d "app" ]; then
+            echo "::error::App module directory is missing."
+            exit 1
+          fi
+
+          # 確認版本目錄是否存在
+          if [ -f "gradle/libs.versions.toml" ]; then
+            echo "Version catalog found."
+          else
+            echo "No Gradle version catalog found."
+          fi
+
+          # 設定 Android SDK 路徑
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+          echo "Root Gradle files:"
+          ls -la
+
+      # 9. 編譯前檢查
       - name: Validate Android Project
         shell: bash
         run: |
@@ -183,29 +243,30 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          if [ ! -f "build.gradle" ] && \
-             [ ! -f "build.gradle.kts" ]; then
-            echo "::error::Root Gradle build file is missing."
+          if [ ! -f "settings.gradle" ] && \
+             [ ! -f "settings.gradle.kts" ]; then
+            echo "::error::Gradle settings file missing."
             exit 1
           fi
 
-          if [ ! -d "app" ]; then
-            echo "::error::The app directory is missing."
-            find . -maxdepth 5 -type f | head -n 200
+          if [ ! -f "build.gradle" ] && \
+             [ ! -f "build.gradle.kts" ]; then
+            echo "::error::Root build file missing."
             exit 1
           fi
 
           if [ ! -f "app/build.gradle" ] && \
              [ ! -f "app/build.gradle.kts" ]; then
-            echo "::error::App Gradle build file is missing."
+            echo "::error::App build file missing."
             exit 1
           fi
 
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "Project structure:"
+          find . -maxdepth 5 -type f \
+            -not -path './.gradle/*' \
+            | head -n 200
 
-          echo "Android project structure validated."
-
-      # 9. 編譯 Debug APK
+      # 10. 編譯 Debug APK
       - name: Build Debug APK
         shell: bash
         run: |
@@ -213,34 +274,23 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "Java version:"
           java -version
-
-          echo "Android SDK:"
-          echo "$ANDROID_HOME"
+          gradle --version
 
           if [ -f "./gradlew" ]; then
-            echo "Using project Gradle Wrapper."
             chmod +x ./gradlew
             ./gradlew --no-daemon assembleDebug
           else
-            if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-              echo "::error::Gradle Wrapper configuration exists, but gradlew is missing."
-              exit 1
-            fi
-
-            echo "Using installed Gradle."
             gradle --no-daemon assembleDebug
           fi
 
-          echo "Searching for APK..."
-
+          echo "Generated APK files:"
           find . \
             -type f \
             -path '*/build/outputs/apk/debug/*.apk' \
             -print
 
-      # 10. 上傳 APK 成品
+      # 11. 上傳 APK
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
