@@ -18,6 +18,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Setup Gradle 8.10.2
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -25,13 +28,13 @@ jobs:
 
       - name: Build Debug APK with Gradle
         run: |
-          # 若有 zip 檔則自動解壓縮
+          # 1. 自動解開 zip 專案包
           if ls *.zip 1> /dev/null 2>&1; then
-            echo "解壓縮專案包..."
+            echo "發現 zip 壓縮包，正在解壓縮..."
             unzip -o *.zip
           fi
 
-          # 自動定位包含 settings.gradle.kts 的專案目錄
+          # 2. 自動尋找包含 settings.gradle.kts 的目錄
           PROJECT_DIR="."
           if [ -f "android/settings.gradle.kts" ]; then
             PROJECT_DIR="android"
@@ -44,11 +47,15 @@ jobs:
             fi
           fi
 
-          echo "專案目錄為: $PROJECT_DIR"
+          echo "進入 Android 專案路徑: $PROJECT_DIR"
           cd "$PROJECT_DIR"
 
-          # 執行 Android APK 編譯
-          gradle assembleDebug --stacktrace --no-daemon
+          # 3. 注入 Android SDK 本地路徑並同意授權
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          yes | sdkmanager --licenses 2>/dev/null || true
+
+          # 4. 執行打包 APK (移除干擾視線的過長 stacktrace)
+          gradle assembleDebug --no-daemon
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
